@@ -30,6 +30,33 @@ from torch.utils.data import Dataset, DataLoader
 
 from utils import tokenization
 from utils.utils import truncate_tokens_pair
+from datasets import load_dataset
+
+
+class HuggingFaceDataset(Dataset):
+    labels = None
+    def __init__(self, dataset, need_prepro, pipeline, max_len, mode, d_type):
+        Dataset.__init__(self)
+        self.cnt = 0
+
+        # need preprocessing
+        if need_prepro:
+            # supervised dataset
+            if d_type == 'sup':
+                data = []
+
+                for instance in self.get_sup(lines):
+                    # if mode == 'eval':
+                    # sentences.append([instance[1]])
+                    for proc in pipeline:
+                        instance = proc(instance, d_type)
+                    data.append(instance)
+
+                self.tensors = [torch.tensor(x, dtype=torch.long) for x in zip(*data)]
+                # if mode == 'eval':
+                # self.tensors.append(sentences)
+
+            # unsupervised dataset
 
 
 class CsvDataset(Dataset):
@@ -184,7 +211,8 @@ class TokenIndexing(Pipeline):
 
 
 def dataset_class(task):
-    table = {'imdb': IMDB}
+    table = {'imdb': IMDB,
+             'amazon_polarity': amazon_polarity}
     return table[task]
 
 
@@ -202,6 +230,9 @@ class IMDB(CsvDataset):
         for line in itertools.islice(lines, 0, None):
             yield (None, line[1], []), (None, line[2], [])  # ko, en
 
+
+class amazon_polarity(CsvDataset):
+    labels = ()
 
 class load_data:
     def __init__(self, cfg):

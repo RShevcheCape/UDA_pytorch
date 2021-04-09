@@ -152,6 +152,8 @@ def main(cfg, model_cfg):
         trainer.train(get_loss, get_acc, cfg.model_file, cfg.pretrain_file)
 
     if cfg.mode == 'eval':
+        print('Evaluation mode')
+        print(cfg)
         results = trainer.eval(get_acc, cfg.model_file, None)
         total_accuracy = torch.cat(results).mean().item()
         print('Accuracy :' , total_accuracy)
