@@ -22,7 +22,7 @@ import ast
 import csv
 import itertools
 
-import pandas as pd    # only import when no need_to_preprocessing
+import pandas as pd  # only import when no need_to_preprocessing
 from tqdm import tqdm
 
 import torch
@@ -33,11 +33,13 @@ from utils.utils import truncate_tokens_pair
 from datasets import load_dataset
 
 
-class HuggingFaceDataset(Dataset):
+class PandasDataset(Dataset):
     labels = None
-    def __init__(self, dataset, need_prepro, pipeline, max_len, mode, d_type):
+
+    def __init__(self, file, need_prepro, pipeline, max_len, mode, d_type):
         Dataset.__init__(self)
         self.cnt = 0
+        dataframe = pd.read_csv(file)
 
         # need preprocessing
         if need_prepro:
@@ -45,22 +47,45 @@ class HuggingFaceDataset(Dataset):
             if d_type == 'sup':
                 data = []
 
-                for instance in self.get_sup(lines):
-                    # if mode == 'eval':
-                    # sentences.append([instance[1]])
+                for instance in self.get_sup(dataframe):
                     for proc in pipeline:
                         instance = proc(instance, d_type)
                     data.append(instance)
 
                 self.tensors = [torch.tensor(x, dtype=torch.long) for x in zip(*data)]
-                # if mode == 'eval':
-                # self.tensors.append(sentences)
 
             # unsupervised dataset
+            elif d_type == 'unsup':
+                data = {'ori': [], 'aug': []}
+                for ori, aug in self.get_unsup(dataframe):
+                    for proc in pipeline:
+                        ori = proc(ori, d_type)
+                        aug = proc(aug, d_type)
+                    self.cnt += 1
+                    data['ori'].append(ori)  # drop label_id
+                    data['aug'].append(aug)  # drop label_id
+                ori_tensor = [torch.tensor(x, dtype=torch.long) for x in zip(*data['ori'])]
+                aug_tensor = [torch.tensor(x, dtype=torch.long) for x in zip(*data['aug'])]
+                self.tensors = ori_tensor + aug_tensor
+            else:
+                raise ValueError("d_type error. (d_type have to sup or unsup)")
+
+    def __len__(self):
+        return self.tensors[0].size(0)
+
+    def __getitem__(self, index):
+        return tuple(tensor[index] for tensor in self.tensors)
+
+    def get_sup(self, lines):
+        raise NotImplementedError
+
+    def get_unsup(self, lines):
+        raise NotImplementedError
 
 
 class CsvDataset(Dataset):
     labels = None
+
     def __init__(self, file, need_prepro, pipeline, max_len, mode, d_type):
         Dataset.__init__(self)
         self.cnt = 0
@@ -73,32 +98,32 @@ class CsvDataset(Dataset):
                 # supervised dataset
                 if d_type == 'sup':
                     # if mode == 'eval':
-                        # sentences = []
+                    # sentences = []
                     data = []
 
                     for instance in self.get_sup(lines):
                         # if mode == 'eval':
-                            # sentences.append([instance[1]])
+                        # sentences.append([instance[1]])
                         for proc in pipeline:
                             instance = proc(instance, d_type)
                         data.append(instance)
 
                     self.tensors = [torch.tensor(x, dtype=torch.long) for x in zip(*data)]
                     # if mode == 'eval':
-                        # self.tensors.append(sentences)
+                    # self.tensors.append(sentences)
 
                 # unsupervised dataset
                 elif d_type == 'unsup':
-                    data = {'ori':[], 'aug':[]}
+                    data = {'ori': [], 'aug': []}
                     for ori, aug in self.get_unsup(lines):
                         for proc in pipeline:
                             ori = proc(ori, d_type)
                             aug = proc(aug, d_type)
                         self.cnt += 1
                         # if self.cnt == 10:
-                            # break
-                        data['ori'].append(ori)    # drop label_id
-                        data['aug'].append(aug)    # drop label_id
+                        # break
+                        data['ori'].append(ori)  # drop label_id
+                        data['aug'].append(aug)  # drop label_id
                     ori_tensor = [torch.tensor(x, dtype=torch.long) for x in zip(*data['ori'])]
                     aug_tensor = [torch.tensor(x, dtype=torch.long) for x in zip(*data['aug'])]
                     self.tensors = ori_tensor + aug_tensor
@@ -111,17 +136,17 @@ class CsvDataset(Dataset):
             if d_type == 'sup':
                 # input_ids, segment_ids(input_type_ids), input_mask, input_label
                 input_columns = ['input_ids', 'input_type_ids', 'input_mask', 'label_ids']
-                self.tensors = [torch.tensor(data[c].apply(lambda x: ast.literal_eval(x)), dtype=torch.long)    \
-                                                                                for c in input_columns[:-1]]
+                self.tensors = [torch.tensor(data[c].apply(lambda x: ast.literal_eval(x)), dtype=torch.long) \
+                                for c in input_columns[:-1]]
                 self.tensors.append(torch.tensor(data[input_columns[-1]], dtype=torch.long))
-                
+
             # unsupervised dataset
             elif d_type == 'unsup':
                 input_columns = ['ori_input_ids', 'ori_input_type_ids', 'ori_input_mask',
                                  'aug_input_ids', 'aug_input_type_ids', 'aug_input_mask']
-                self.tensors = [torch.tensor(data[c].apply(lambda x: ast.literal_eval(x)), dtype=torch.long)    \
-                                                                                for c in input_columns]
-                
+                self.tensors = [torch.tensor(data[c].apply(lambda x: ast.literal_eval(x)), dtype=torch.long) \
+                                for c in input_columns]
+
             else:
                 raise "d_type error. (d_type have to sup or unsup)"
 
@@ -154,7 +179,7 @@ class Tokenizing(Pipeline):
 
     def __call__(self, instance, d_type):
         label, text_a, text_b = instance
-        
+
         label = self.preprocessor(label) if label else None
         tokens_a = self.tokenize(self.preprocessor(text_a))
         tokens_b = self.tokenize(self.preprocessor(text_b)) if text_b else []
@@ -166,7 +191,7 @@ class AddSpecialTokensWithTruncation(Pipeline):
     def __init__(self, max_len=512):
         super().__init__()
         self.max_len = max_len
-    
+
     def __call__(self, instance, d_type):
         label, tokens_a, tokens_b = instance
 
@@ -185,7 +210,7 @@ class AddSpecialTokensWithTruncation(Pipeline):
 class TokenIndexing(Pipeline):
     def __init__(self, indexer, labels, max_len=512):
         super().__init__()
-        self.indexer = indexer # function : tokens to indexes
+        self.indexer = indexer  # function : tokens to indexes
         # map from a label name to a label index
         self.label_map = {name: i for i, name in enumerate(labels)}
         self.max_len = max_len
@@ -194,15 +219,15 @@ class TokenIndexing(Pipeline):
         label, tokens_a, tokens_b = instance
 
         input_ids = self.indexer(tokens_a + tokens_b)
-        segment_ids = [0]*len(tokens_a) + [1]*len(tokens_b) # type_ids
-        input_mask = [1]*(len(tokens_a) + len(tokens_b))
+        segment_ids = [0] * len(tokens_a) + [1] * len(tokens_b)  # type_ids
+        input_mask = [1] * (len(tokens_a) + len(tokens_b))
         label_id = self.label_map[label] if label else None
 
         # zero padding
         n_pad = self.max_len - len(input_ids)
-        input_ids.extend([0]*n_pad)
-        segment_ids.extend([0]*n_pad)
-        input_mask.extend([0]*n_pad)
+        input_ids.extend([0] * n_pad)
+        segment_ids.extend([0] * n_pad)
+        input_mask.extend([0] * n_pad)
 
         if label_id != None:
             return (input_ids, segment_ids, input_mask, label_id)
@@ -212,18 +237,19 @@ class TokenIndexing(Pipeline):
 
 def dataset_class(task):
     table = {'imdb': IMDB,
-             'amazon_polarity': amazon_polarity}
+             'mls': MLS}
     return table[task]
 
 
 class IMDB(CsvDataset):
     labels = ('0', '1')
+
     def __init__(self, file, need_prepro, pipeline=[], max_len=128, mode='train', d_type='sup'):
         super().__init__(file, need_prepro, pipeline, max_len, mode, d_type)
 
     def get_sup(self, lines):
         for line in itertools.islice(lines, 0, None):
-            yield line[7], line[6], []    # label, text_a, None
+            yield line[7], line[6], []  # label, text_a, None
             # yield None, line[6], []
 
     def get_unsup(self, lines):
@@ -231,8 +257,20 @@ class IMDB(CsvDataset):
             yield (None, line[1], []), (None, line[2], [])  # ko, en
 
 
-class amazon_polarity(CsvDataset):
-    labels = ()
+class MLS(PandasDataset):
+    labels = ('BAD', 'GOOD')
+
+    def __init__(self, file, need_prepro, pipeline=[], max_len=128, mode='train', d_type='sup'):
+        super().__init__(file, need_prepro, pipeline, max_len, mode, d_type)
+
+    def get_sup(self, df):
+        for i, line in df.iterrows():
+            yield line['label'], line['sample'], []  # label, text_a, None
+
+    def get_unsup(self, df):
+        for i, line in df.iterrows():
+            yield (None, line['aug_sample'], []), (None, line['sample'], [])  # de->en, en
+
 
 class load_data:
     def __init__(self, cfg):
@@ -243,42 +281,46 @@ class load_data:
         if cfg.need_prepro:
             tokenizer = tokenization.FullTokenizer(vocab_file=cfg.vocab, do_lower_case=cfg.do_lower_case)
             self.pipeline = [Tokenizing(tokenizer.convert_to_unicode, tokenizer.tokenize),
-                        AddSpecialTokensWithTruncation(cfg.max_seq_length),
-                        TokenIndexing(tokenizer.convert_tokens_to_ids, self.TaskDataset.labels, cfg.max_seq_length)]
-        
+                             AddSpecialTokensWithTruncation(cfg.max_seq_length),
+                             TokenIndexing(tokenizer.convert_tokens_to_ids, self.TaskDataset.labels,
+                                           cfg.max_seq_length)]
+
         if cfg.mode == 'train':
             self.sup_data_dir = cfg.sup_data_dir
             self.sup_batch_size = cfg.train_batch_size
             self.shuffle = True
         elif cfg.mode == 'train_eval':
             self.sup_data_dir = cfg.sup_data_dir
-            self.eval_data_dir= cfg.eval_data_dir
+            self.eval_data_dir = cfg.eval_data_dir
             self.sup_batch_size = cfg.train_batch_size
             self.eval_batch_size = cfg.eval_batch_size
             self.shuffle = True
         elif cfg.mode == 'eval':
             self.sup_data_dir = cfg.eval_data_dir
             self.sup_batch_size = cfg.eval_batch_size
-            self.shuffle = False                            # Not shuffel when eval mode
-        
-        if cfg.uda_mode:                                    # Only uda_mode
+            self.shuffle = False  # Not shuffel when eval mode
+
+        if cfg.uda_mode:  # Only uda_mode
             self.unsup_data_dir = cfg.unsup_data_dir
             self.unsup_batch_size = cfg.train_batch_size * cfg.unsup_ratio
 
     def sup_data_iter(self):
-        sup_dataset = self.TaskDataset(self.sup_data_dir, self.cfg.need_prepro, self.pipeline, self.cfg.max_seq_length, self.cfg.mode, 'sup')
+        sup_dataset = self.TaskDataset(self.sup_data_dir, self.cfg.need_prepro, self.pipeline, self.cfg.max_seq_length,
+                                       self.cfg.mode, 'sup')
         sup_data_iter = DataLoader(sup_dataset, batch_size=self.sup_batch_size, shuffle=self.shuffle)
-        
+
         return sup_data_iter
 
     def unsup_data_iter(self):
-        unsup_dataset = self.TaskDataset(self.unsup_data_dir, self.cfg.need_prepro, self.pipeline, self.cfg.max_seq_length, self.cfg.mode, 'unsup')
+        unsup_dataset = self.TaskDataset(self.unsup_data_dir, self.cfg.need_prepro, self.pipeline,
+                                         self.cfg.max_seq_length, self.cfg.mode, 'unsup')
         unsup_data_iter = DataLoader(unsup_dataset, batch_size=self.unsup_batch_size, shuffle=self.shuffle)
 
         return unsup_data_iter
 
     def eval_data_iter(self):
-        eval_dataset = self.TaskDataset(self.eval_data_dir, self.cfg.need_prepro, self.pipeline, self.cfg.max_seq_length, 'eval', 'sup')
+        eval_dataset = self.TaskDataset(self.eval_data_dir, self.cfg.need_prepro, self.pipeline,
+                                        self.cfg.max_seq_length, 'eval', 'sup')
         eval_data_iter = DataLoader(eval_dataset, batch_size=self.eval_batch_size, shuffle=False)
 
         return eval_data_iter
